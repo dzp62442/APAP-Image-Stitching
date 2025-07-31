@@ -55,9 +55,17 @@ class Apap(Homography):
                 W, U, V = cv2.SVDecomp(A)
                 h = V[-1, :]
                 h = h.reshape((3, 3))
-                h = np.linalg.inv(C2).dot(h).dot(C1)
-                h = np.linalg.inv(N2).dot(h).dot(N1)
-                h = h / h[2, 2]
+                try:
+                    h = np.linalg.inv(C2).dot(h).dot(C1)
+                    h = np.linalg.inv(N2).dot(h).dot(N1)
+                    h = h / h[2, 2]
+                    # 检查生成的同形矩阵是否有效
+                    if np.linalg.det(h) < 1e-10:
+                        # 如果行列式太小，使用单位矩阵作为备选
+                        h = np.eye(3)
+                except np.linalg.LinAlgError:
+                    # 如果矩阵求逆失败，使用单位矩阵作为备选
+                    h = np.eye(3)
                 local_homography_[i, j] = h
         return local_homography_, local_weight
 
@@ -95,12 +103,20 @@ class Apap(Homography):
             m = np.where(i < mesh_h)[0][0]
             for j in range(self.final_width):
                 n = np.where(j < mesh_w)[0][0]
-                homography = np.linalg.inv(local_homography[m-1, n-1, :])
-                x, y = j - self.offset_x, i - self.offset_y
-                source_pts = np.array([x, y, 1])
-                target_pts = self.warp_coordinate_estimate(source_pts, homography)
-                if 0 < target_pts[0] < ori_w and 0 < target_pts[1] < ori_h:
-                    warped_img[i, j, :] = ori_img[int(target_pts[1]), int(target_pts[0]), :]
+                try:
+                    # 检查矩阵是否可逆
+                    h_matrix = local_homography[m-1, n-1, :]
+                    if np.linalg.det(h_matrix) < 1e-10:  # 如果行列式太小，认为是奇异矩阵
+                        continue  # 跳过这个像素点
+                    homography = np.linalg.inv(h_matrix)
+                    x, y = j - self.offset_x, i - self.offset_y
+                    source_pts = np.array([x, y, 1])
+                    target_pts = self.warp_coordinate_estimate(source_pts, homography)
+                    if 0 < target_pts[0] < ori_w and 0 < target_pts[1] < ori_h:
+                        warped_img[i, j, :] = ori_img[int(target_pts[1]), int(target_pts[0]), :]
+                except np.linalg.LinAlgError:
+                    # 如果矩阵求逆失败，跳过这个像素点
+                    continue
 
         return warped_img
 

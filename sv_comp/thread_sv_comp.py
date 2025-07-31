@@ -14,6 +14,7 @@ import os
 from PIL import Image
 import glob
 import re
+from loguru import logger
 
 """
 ***  Conventional Image-Stitching Pipeline ***
@@ -137,7 +138,7 @@ class ThreadSVComp:
 
         # 检查RANSAC是否返回了有效的匹配点
         if len(final_src) == 0:
-            print(f"RANSAC failed - no valid matching points found")
+            logger.warning(f"RANSAC failed - no valid matching points found")
             # 创建一个简单的拼接结果
             final_h = max(ori_h, dst_h)
             final_w = max(ori_w, dst_w)
@@ -155,7 +156,7 @@ class ThreadSVComp:
         final_w, final_h, offset_x, offset_y = final_size(img1, img2, gh)
 
         if final_h > ori_h * 4. or final_w > ori_w * 4.:
-            print("Homography Estimation Failed !!!")
+            logger.warning("Homography Estimation Failed !")
             final_h = max(ori_h, dst_h)
             final_w = max(ori_w, dst_w)
             result = np.zeros(shape=(final_h, final_w, 3), dtype=np.uint8)
@@ -218,7 +219,7 @@ class ThreadSVComp:
         
         datalist = self.call_dataset_sv_comp(self.opt.imgroot, self.opt.imgnum)
         for idx, data in enumerate(datalist):
-            print(f'====================== {idx} / {len(datalist)} ======================')
+            logger.info(f'====================== {idx} / {len(datalist)} ======================')
             save_dir = os.path.join(os.path.dirname(data[0]), 'apap')
             data = divider.list_divide(data)
             self.process(data, mask, save_dir)

@@ -12,7 +12,8 @@ from utils.recursive import RecursiveDivider
 import time
 import os
 from PIL import Image
-
+import glob
+import re
 
 """
 ***  Conventional Image-Stitching Pipeline ***
@@ -27,7 +28,7 @@ from PIL import Image
 """
 
 
-class Thread:
+class ThreadSVComp:
     def __init__(self, opt):
         self.opt = opt
         self.n = 0  # line number of txt file
@@ -53,7 +54,7 @@ class Thread:
                 # just return
                 return src
 
-    def process(self, imgdir, mask):
+    def process(self, imgdir, mask, save_dir):
         unit_start = time.perf_counter()
         if self.opt.print_n: print(f'processing {self.n + 1} thread...')
         # ========================================== call image & stitch ==============================================
@@ -76,12 +77,11 @@ class Thread:
             pass
         # ==============================================================================================================
         # =========================================== save result image ================================================
-        if self.opt.saveroot is not None:
-            os.makedirs(self.opt.saveroot, exist_ok=True)
-            save_dir = os.path.join(self.opt.saveroot, self.opt.savename +
-                                    str(self.n).zfill(5) + '.' + self.opt.savefmt)
-            cv2.imwrite(save_dir, result[:, :, ::-1])
-            if self.opt.saveprint: print(f'{self.n+1} image saved -> {save_dir}')
+        if self.opt.save:
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, str(self.opt.imgnum)+'.'+self.opt.savefmt)
+            cv2.imwrite(save_path, result[:, :, ::-1])
+            if self.opt.saveprint: print(f'{self.n+1} image saved -> {save_path}')
         # ==============================================================================================================
         # =========================================== print result image ===============================================
         if self.opt.image_show > self.n or self.opt.image_show == -1:
@@ -135,6 +135,19 @@ class Thread:
         final_src, final_dst = ransac.thread(src_match, dst_match, self.opt.ransac_max)
         if self.opt.verbose: print(f'final matching points: {len(final_src)}')
 
+        # 检查RANSAC是否返回了有效的匹配点
+        if len(final_src) == 0:
+            print(f"RANSAC failed - no valid matching points found")
+            # 创建一个简单的拼接结果
+            final_h = max(ori_h, dst_h)
+            final_w = max(ori_w, dst_w)
+            result = np.zeros(shape=(final_h, final_w, 3), dtype=np.uint8)
+            img1 = cv2.resize(img1, dsize=(final_w, final_h))
+            img2 = cv2.resize(img2, dsize=(final_w, final_h))
+            result[:, :int(final_w/2), :] = img1[:, :int(final_w/2), :]
+            result[:, int(final_w/2):, :] = img2[:, int(final_w/2):, :]
+            return result
+
         # Global Homography
         if self.opt.verbose: print(f'{self.n + 1} image Global Homography Estimation...')
         h_agent = Homography()
@@ -142,10 +155,10 @@ class Thread:
         final_w, final_h, offset_x, offset_y = final_size(img1, img2, gh)
 
         if final_h > ori_h * 4. or final_w > ori_w * 4.:
-            print("Homography Estimation Failed.")
+            print("Homography Estimation Failed !!!")
             final_h = max(ori_h, dst_h)
             final_w = max(ori_w, dst_w)
-            result = np.zeros(shape=(final_w, final_h), dtype=np.uint8)
+            result = np.zeros(shape=(final_h, final_w, 3), dtype=np.uint8)
             img1 = cv2.resize(img1, dsize=(final_w, final_h))
             img2 = cv2.resize(img2, dsize=(final_w, final_h))
             result[:, :int(final_w/2), :] = img1[:, :int(final_w/2), :]
@@ -181,26 +194,32 @@ class Thread:
         # store
         return result
 
+    @staticmethod
+    def call_dataset_sv_comp(root, imgnum):      
+        target_stack = []
+        groups = glob.glob(os.path.join(root, 'testing', '*'))  # 当前子数据集中的所有数据组
+        pattern = r'^\d{4,5}$'  # 匹配仅由四位或五位数字组成的字符串
+        for group in sorted(groups):
+            group_idx = group.split('/')[-1]
+            if bool(re.match(pattern, group_idx)):  # 如果当前数据组的名称符合要求
+                img_lists = glob.glob(os.path.join(group, '*.jpg'))
+                img_lists.sort()
+                if len(img_lists) < imgnum:
+                    continue
+                target_stack.append(img_lists[:imgnum])
+
+        return target_stack
+    
     def thread_choice(self):
         # mask setting
         mask = self.call_mask()
         # divider instance
         divider = RecursiveDivider()
-        # two image stitching
-        if None not in [self.opt.img1, self.opt.img2]:
-            data = divider.list_divide([self.opt.img1, self.opt.img2])
-            self.process(data, mask)
-        # multi image stitching
-        elif self.opt.imgs is not None:
-            data = divider.list_divide(self.opt.imgs)
-            self.process(data, mask)
-        # image (root + txt list merging) or (absolute) path stitching
-        elif None not in [self.opt.imgroot, self.opt.imglist]:
-            datalist = self.call_dataset(self.opt.imglist, root=self.opt.imgroot)
-            for data in datalist:
-                data = divider.list_divide(data)
-                self.process(data, mask)
-                # self.process(data, mask)
-        # error
-        else:
-            print('please enter input options.')
+        
+        datalist = self.call_dataset_sv_comp(self.opt.imgroot, self.opt.imgnum)
+        for idx, data in enumerate(datalist):
+            print(f'====================== {idx} / {len(datalist)} ======================')
+            save_dir = os.path.join(os.path.dirname(data[0]), 'apap')
+            data = divider.list_divide(data)
+            self.process(data, mask, save_dir)
+        

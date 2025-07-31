@@ -55,6 +55,11 @@ class RANSAC:
         :param max_try: user setting
         :return: good matching points
         """
+        # 检查是否有足够的匹配点进行RANSAC
+        if len(src) < self.m:
+            print(f"Warning: Not enough matching points for RANSAC. Need at least {self.m}, but only have {len(src)}")
+            return np.array([]), np.array([])
+            
         smax_inliers = []
         dmax_inliers = []
         arr_range = list(np.arange(len(src)))

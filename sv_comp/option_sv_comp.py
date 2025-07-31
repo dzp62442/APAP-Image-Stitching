@@ -12,7 +12,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-class Options:
+class OptionsSVComp:
     def __init__(self):
         self.parser = argparse.ArgumentParser()
         self.initialized = False
@@ -20,21 +20,17 @@ class Options:
 
     def initialize(self):
         # Optimized for PyCharm Editor
-        # unit image directory list
-        self.parser.add_argument('--img1', type=str, default=None)
-        self.parser.add_argument('--img2', type=str, default=None)
-        self.parser.add_argument('--imgs', '-i', type=str, nargs='+', default=None, help='image directiory <list>')
 
         # root + unit directory merging (os.path.join)
         self.parser.add_argument('--imgroot', type=str, default=None, help='directory for merging')
-        self.parser.add_argument('--imglist', type=str, default=None, help='merging path or absolute path txt file')
+        self.parser.add_argument('--imgnum', type=int, default=2, help='number of images')
+        self.parser.add_argument('--resize', type=int, default=(400, 300), nargs='+', help='unit resizing (width, height)')
 
         # stitching settings
         self.parser.add_argument('--mesh_size', type=int, default=100, help='# of square matrix (local-homography mesh)')
         self.parser.add_argument('--mask_dir', type=str, default=None, help='mask image directory for carving')
         self.parser.add_argument('--mask_root', type=str, default=None, help='mask image root directory')
-        self.parser.add_argument('--resize', type=int, default=(400, 300), nargs='+',
-                                 help='unit resizing (width, height)')
+        
         self.parser.add_argument('--ransac_max', type=int, default=500, help='RANSAC MAX trial')
         self.parser.add_argument('--ransac_thres', type=float, default=30, help='RANSAC distance')
         self.parser.add_argument('--ransac_sample', type=int, default=12, help='RANSAC sampling number')
@@ -55,8 +51,7 @@ class Options:
         self.parser.add_argument('--saveprint', type=str2bool, default=True, help='print save directory')
 
         # save settings
-        self.parser.add_argument('--saveroot', type=str, default=None, help='save or not, save folder directory')
-        self.parser.add_argument('--savename', type=str, default='out_', help='result save naming variable')
+        self.parser.add_argument('--save', action='store_true', help='save or not')
         self.parser.add_argument('--savefmt', type=str, default='jpg', help='save file extension format')
 
     def parse(self):

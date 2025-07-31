@@ -1,7 +1,7 @@
-from option import Options
-from thread import Thread
+from sv_comp.option_sv_comp import OptionsSVComp
+from sv_comp.thread_sv_comp import ThreadSVComp
 
 if __name__ == '__main__':
-    opt = Options().parse()
-    thread = Thread(opt)
+    opt = OptionsSVComp().parse()
+    thread = ThreadSVComp(opt)
     thread.thread_choice()

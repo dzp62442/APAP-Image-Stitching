@@ -40,6 +40,7 @@ class ThreadSVComp:
         self.psnr_list = []
         self.ssim_list = []
         self.csv_path = os.path.join(self.opt.imgroot, f'apap_{self.opt.imgnum}.csv')
+        self.already_processed = []
 
     def recursive(self, imgdir):
         if isinstance(imgdir, list):
@@ -96,7 +97,6 @@ class ThreadSVComp:
             result.show()
         # ==============================================================================================================
         if self.opt.unit_time: print(f'{self.n} image time spending: {time.perf_counter() - unit_start:4f}s.')
-        self.n += 1
 
     @staticmethod
     def call_dataset(fname, root=None):
@@ -149,10 +149,14 @@ class ThreadSVComp:
             final_h = max(ori_h, dst_h)
             final_w = max(ori_w, dst_w)
             result = np.zeros(shape=(final_h, final_w, 3), dtype=np.uint8)
-            img1 = cv2.resize(img1, dsize=(final_w, final_h))
-            img2 = cv2.resize(img2, dsize=(final_w, final_h))
-            result[:, :int(final_w/2), :] = img1[:, :int(final_w/2), :]
-            result[:, int(final_w/2):, :] = img2[:, int(final_w/2):, :]
+            warped_img = cv2.resize(img1, dsize=(final_w, final_h))
+            dst_img = cv2.resize(img2, dsize=(final_w, final_h))
+            result = uniform_blend(warped_img, dst_img)  # 直接叠加，相当于单位阵拼接
+            # result[:, :int(final_w/2), :] = img1[:, :int(final_w/2), :]
+            # result[:, int(final_w/2):, :] = img2[:, int(final_w/2):, :]
+            # 计算拼接指标
+            if self.opt.metric:
+                self.metric(warped_img, dst_img, result)
             return result
 
         # Global Homography
@@ -161,15 +165,16 @@ class ThreadSVComp:
         gh = h_agent.global_homography(final_src, final_dst)
         final_w, final_h, offset_x, offset_y = final_size(img1, img2, gh)
 
-        if final_h > ori_h * 4. or final_w > ori_w * 4.:
+        if abs(final_h) > ori_h * 4. or abs(final_w) > ori_w * 4.:  # 检查拼接后的图像尺寸是否超过原始图像尺寸的4倍
             logger.warning("Homography Estimation Failed !")
             final_h = max(ori_h, dst_h)
             final_w = max(ori_w, dst_w)
             result = np.zeros(shape=(final_h, final_w, 3), dtype=np.uint8)
-            img1 = cv2.resize(img1, dsize=(final_w, final_h))
-            img2 = cv2.resize(img2, dsize=(final_w, final_h))
-            result[:, :int(final_w/2), :] = img1[:, :int(final_w/2), :]
-            result[:, int(final_w/2):, :] = img2[:, int(final_w/2):, :]
+            warped_img = cv2.resize(img1, dsize=(final_w, final_h))
+            dst_img = cv2.resize(img2, dsize=(final_w, final_h))
+            result = uniform_blend(warped_img, dst_img)  # 直接叠加，相当于单位阵拼接
+            # result[:, :int(final_w/2), :] = img1[:, :int(final_w/2), :]
+            # result[:, int(final_w/2):, :] = img2[:, int(final_w/2):, :]
         else:
             # APAP
             # ready meshgrid
@@ -193,46 +198,15 @@ class ThreadSVComp:
             if self.opt.verbose: print(f'{self.n} image blending...')
             result = uniform_blend(warped_img, dst_img)
 
-            #! 只在拼接成功时计算 psnr ssim 指标
-            if self.opt.metric:
-                # 生成掩码
-                warped_mask = np.zeros((warped_img.shape[0], warped_img.shape[1]), dtype=np.uint8)
-                warped_mask[np.any(warped_img > 0, axis=2)] = 255
-                dst_mask = np.zeros((dst_img.shape[0], dst_img.shape[1]), dtype=np.uint8)
-                dst_mask[np.any(dst_img > 0, axis=2)] = 255
-
-                # 掩码中白色区域可能存在细小黑点，通过形态学操作去除
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # 形态学操作去除细小黑点
-                warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_CLOSE, kernel)  # 闭操作：先膨胀后腐蚀，填充小的黑点（在白色区域中）
-                dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_CLOSE, kernel)
-                warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_OPEN, kernel)  # 开操作：先腐蚀后膨胀，去除小的白点（在黑色背景上）
-                dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_OPEN, kernel)
-
-                # 计算重叠区域指标
-                warped_mask_f = cv2.cvtColor(warped_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
-                dst_mask_f = cv2.cvtColor(dst_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
-                overlap_mask = warped_mask_f * dst_mask_f
-                psnr_one = skimage.measure.compare_psnr(warped_img*overlap_mask, dst_img*overlap_mask, 255)
-                ssim_one = skimage.measure.compare_ssim(warped_img*overlap_mask, dst_img*overlap_mask, data_range=255, multichannel=True)
-                logger.info(f'psnr: {psnr_one}, ssim: {ssim_one}')
-                self.psnr_list.append(psnr_one)
-                self.ssim_list.append(ssim_one)
-                self.csv_writer.writerow([self.n, psnr_one, ssim_one])
-
-                # 保存调试图像
-                # cv2.imwrite('warped_img.jpg', warped_img)
-                # cv2.imwrite('dst_img.jpg', dst_img)
-                # cv2.imwrite('result.jpg', result)
-                # cv2.imwrite('warped_mask.jpg', warped_mask)
-                # cv2.imwrite('dst_mask.jpg', dst_mask)
-                # cv2.imwrite('overlap_mask.jpg', overlap_mask.astype(np.uint8)*255)
-
             # Draw
             if self.opt.match_print:
                 match_fig = draw_match(img1, img2, final_src, final_dst, self.opt.matching_line)
                 Image.fromarray(match_fig).show()
 
-        # store
+        # 计算拼接指标
+        if self.opt.metric:
+            self.metric(warped_img, dst_img, result)
+
         return result
 
     @staticmethod
@@ -250,6 +224,39 @@ class ThreadSVComp:
                 target_stack.append(img_lists[:imgnum])
 
         return target_stack
+
+    def metric(self, warped_img, dst_img, result):
+        # 生成掩码
+        warped_mask = np.zeros((warped_img.shape[0], warped_img.shape[1]), dtype=np.uint8)
+        warped_mask[np.any(warped_img > 0, axis=2)] = 255
+        dst_mask = np.zeros((dst_img.shape[0], dst_img.shape[1]), dtype=np.uint8)
+        dst_mask[np.any(dst_img > 0, axis=2)] = 255
+
+        # 掩码中白色区域可能存在细小黑点，通过形态学操作去除
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # 形态学操作去除细小黑点
+        warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_CLOSE, kernel)  # 闭操作：先膨胀后腐蚀，填充小的黑点（在白色区域中）
+        dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_CLOSE, kernel)
+        warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_OPEN, kernel)  # 开操作：先腐蚀后膨胀，去除小的白点（在黑色背景上）
+        dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_OPEN, kernel)
+
+        # 计算重叠区域指标
+        warped_mask_f = cv2.cvtColor(warped_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
+        dst_mask_f = cv2.cvtColor(dst_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
+        overlap_mask = warped_mask_f * dst_mask_f
+        psnr_one = skimage.measure.compare_psnr(warped_img*overlap_mask, dst_img*overlap_mask, 255)
+        ssim_one = skimage.measure.compare_ssim(warped_img*overlap_mask, dst_img*overlap_mask, data_range=255, multichannel=True)
+        logger.info(f'psnr: {psnr_one}, ssim: {ssim_one}')
+        self.psnr_list.append(psnr_one)
+        self.ssim_list.append(ssim_one)
+        self.csv_writer.writerow([self.n, psnr_one, ssim_one])
+
+        # 保存调试图像
+        # cv2.imwrite('warped_img.jpg', warped_img)
+        # cv2.imwrite('dst_img.jpg', dst_img)
+        # cv2.imwrite('result.jpg', result)
+        # cv2.imwrite('warped_mask.jpg', warped_mask)
+        # cv2.imwrite('dst_mask.jpg', dst_mask)
+        # cv2.imwrite('overlap_mask.jpg', overlap_mask.astype(np.uint8)*255)
     
     def forward(self):
         # mask setting
@@ -264,19 +271,18 @@ class ThreadSVComp:
             with open(self.csv_path, 'r') as f:
                 reader = csv.reader(f)
                 for row in reader:
-                    self.n = int(row[0])
+                    self.already_processed.append(int(row[0]))
                     self.psnr_list.append(float(row[1]))
                     self.ssim_list.append(float(row[2]))
-            if self.n > 0:  # 如果已经处理过数据，则从下一行开始处理
-                self.n += 1
         
         with open(self.csv_path, 'a', newline='') as f:
             self.csv_writer = csv.writer(f)  # 追加写入
             # 进行拼接
             for idx in range(len(datalist)):
-                if idx < self.n:  # 跳过已经处理过的数据
+                if idx in self.already_processed:  # 跳过已经处理过的数据
                     continue
                 logger.info(f'====================== {idx} / {len(datalist)} ======================')
+                self.n = idx
                 data = datalist[idx]
                 save_dir = os.path.join(os.path.dirname(data[0]), 'apap')
                 data = divider.list_divide(data)

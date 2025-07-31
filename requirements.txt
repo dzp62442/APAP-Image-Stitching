@@ -3,4 +3,5 @@ opencv-python == 4.4.0.46
 opencv-contrib-python == 4.4.0.46
 pillow == 8.0.1
 tqdm == 4.50.2
+scikit-image==0.15.0
 argparse

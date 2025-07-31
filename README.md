@@ -2,6 +2,7 @@
 ```bash
 conda create -n apap python=3.8.5
 conda activate apap
+pip install setuptools==65.5.1
 pip install -r requirements.txt
 ```
 

@@ -15,6 +15,8 @@ from PIL import Image
 import glob
 import re
 from loguru import logger
+import skimage
+import cv2
 
 """
 ***  Conventional Image-Stitching Pipeline ***
@@ -34,6 +36,8 @@ class ThreadSVComp:
         self.opt = opt
         self.n = 0  # line number of txt file
         self.unit_w, self.unit_h = self.opt.resize
+        self.psnr_list = []
+        self.ssim_list = []
 
     def recursive(self, imgdir):
         if isinstance(imgdir, list):
@@ -180,12 +184,45 @@ class ThreadSVComp:
             warped_img = stitcher.local_warp(img1, local_homography, mesh, self.opt.warping_progress)
 
             # another image pixel move
-            dst_temp = np.zeros_like(warped_img)
-            dst_temp[offset_y: dst_h + offset_y, offset_x: dst_w + offset_x, :] = img2
+            dst_img = np.zeros_like(warped_img)
+            dst_img[offset_y: dst_h + offset_y, offset_x: dst_w + offset_x, :] = img2
 
             # Uniform(50:50) blending
             if self.opt.verbose: print(f'{self.n+1} image blending...')
-            result = uniform_blend(warped_img, dst_temp)
+            result = uniform_blend(warped_img, dst_img)
+
+            #! 只在拼接成功时计算 psnr ssim 指标
+            if self.opt.metric:
+                # 生成掩码
+                warped_mask = np.zeros((warped_img.shape[0], warped_img.shape[1]), dtype=np.uint8)
+                warped_mask[np.any(warped_img > 0, axis=2)] = 255
+                dst_mask = np.zeros((dst_img.shape[0], dst_img.shape[1]), dtype=np.uint8)
+                dst_mask[np.any(dst_img > 0, axis=2)] = 255
+
+                # 掩码中白色区域可能存在细小黑点，通过形态学操作去除
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # 形态学操作去除细小黑点
+                warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_CLOSE, kernel)  # 闭操作：先膨胀后腐蚀，填充小的黑点（在白色区域中）
+                dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_CLOSE, kernel)
+                warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_OPEN, kernel)  # 开操作：先腐蚀后膨胀，去除小的白点（在黑色背景上）
+                dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_OPEN, kernel)
+
+                # 计算重叠区域指标
+                warped_mask_f = cv2.cvtColor(warped_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
+                dst_mask_f = cv2.cvtColor(dst_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
+                overlap_mask = warped_mask_f * dst_mask_f
+                psnr_one = skimage.measure.compare_psnr(warped_img*overlap_mask, dst_img*overlap_mask, 255)
+                ssim_one = skimage.measure.compare_ssim(warped_img*overlap_mask, dst_img*overlap_mask, data_range=255, multichannel=True)
+                logger.info(f'psnr: {psnr_one}, ssim: {ssim_one}')
+                self.psnr_list.append(psnr_one)
+                self.ssim_list.append(ssim_one)
+
+                # 保存调试图像
+                # cv2.imwrite('warped_img.jpg', warped_img)
+                # cv2.imwrite('dst_img.jpg', dst_img)
+                # cv2.imwrite('result.jpg', result)
+                # cv2.imwrite('warped_mask.jpg', warped_mask)
+                # cv2.imwrite('dst_mask.jpg', dst_mask)
+                # cv2.imwrite('overlap_mask.jpg', overlap_mask.astype(np.uint8)*255)
 
             # Draw
             if self.opt.match_print:
@@ -219,8 +256,36 @@ class ThreadSVComp:
         
         datalist = self.call_dataset_sv_comp(self.opt.imgroot, self.opt.imgnum)
         for idx, data in enumerate(datalist):
+            # if idx > 1:
+            #     break
             logger.info(f'====================== {idx} / {len(datalist)} ======================')
             save_dir = os.path.join(os.path.dirname(data[0]), 'apap')
             data = divider.list_divide(data)
             self.process(data, mask, save_dir)
+            
+        # 计算指标
+        logger.info('<==================== Analysis ===================>')
+        total_samples = len(datalist)
+        failure_num = 0  # TODO: 计算失败数量
+        thirty_percent_index = int((total_samples-failure_num) * 0.3)
+        sixty_percent_index = int((total_samples-failure_num) * 0.6)
+        logger.info(f'Fail num: {failure_num}, total num: {total_samples}, success num: {total_samples-failure_num}')
+        
+        self.psnr_list.sort(reverse = True)
+        psnr_list_30 = self.psnr_list[0 : thirty_percent_index]
+        psnr_list_60 = self.psnr_list[thirty_percent_index: sixty_percent_index]
+        psnr_list_100 = self.psnr_list[sixty_percent_index: -1]
+        print("[psnr] top 30%: ", np.mean(psnr_list_30))
+        print("[psnr] top 30~60%: ", np.mean(psnr_list_60))
+        print("[psnr] top 60~100%: ", np.mean(psnr_list_100))
+        logger.info('[psnr] average: {}'.format(np.mean(self.psnr_list)))
+
+        self.ssim_list.sort(reverse = True)
+        ssim_list_30 = self.ssim_list[0 : thirty_percent_index]
+        ssim_list_60 = self.ssim_list[thirty_percent_index: sixty_percent_index]
+        ssim_list_100 = self.ssim_list[sixty_percent_index: -1]
+        print("[ssim] top 30%: ", np.mean(ssim_list_30))
+        print("[ssim] top 30~60%: ", np.mean(ssim_list_60))
+        print("[ssim] top 60~100%: ", np.mean(ssim_list_100))
+        logger.info('[ssim] average: {}'.format(np.mean(self.ssim_list)))
         

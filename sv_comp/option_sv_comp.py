@@ -25,6 +25,7 @@ class OptionsSVComp:
         self.parser.add_argument('--imgroot', type=str, default=None, help='directory for merging')
         self.parser.add_argument('--imgnum', type=int, default=2, help='number of images')
         self.parser.add_argument('--resize', type=int, default=(400, 300), nargs='+', help='unit resizing (width, height)')
+        self.parser.add_argument('--metric', type=str2bool, default=True, help='calculate metric or not')
 
         # stitching settings
         self.parser.add_argument('--mesh_size', type=int, default=100, help='# of square matrix (local-homography mesh)')
@@ -51,7 +52,7 @@ class OptionsSVComp:
         self.parser.add_argument('--saveprint', type=str2bool, default=True, help='print save directory')
 
         # save settings
-        self.parser.add_argument('--save', action='store_true', help='save or not')
+        self.parser.add_argument('--save', type=str2bool, default=True, help='save or not')
         self.parser.add_argument('--savefmt', type=str, default='jpg', help='save file extension format')
 
     def parse(self):

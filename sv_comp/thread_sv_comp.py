@@ -17,6 +17,7 @@ import re
 from loguru import logger
 import skimage
 import cv2
+import csv
 
 """
 ***  Conventional Image-Stitching Pipeline ***
@@ -38,6 +39,7 @@ class ThreadSVComp:
         self.unit_w, self.unit_h = self.opt.resize
         self.psnr_list = []
         self.ssim_list = []
+        self.csv_path = os.path.join(self.opt.imgroot, f'apap_{self.opt.imgnum}.csv')
 
     def recursive(self, imgdir):
         if isinstance(imgdir, list):
@@ -61,7 +63,7 @@ class ThreadSVComp:
 
     def process(self, imgdir, mask, save_dir):
         unit_start = time.perf_counter()
-        if self.opt.print_n: print(f'processing {self.n + 1} thread...')
+        if self.opt.print_n: print(f'processing {self.n} thread...')
         # ========================================== call image & stitch ==============================================
         result = self.recursive(imgdir)
         # ==============================================================================================================
@@ -86,14 +88,14 @@ class ThreadSVComp:
             os.makedirs(save_dir, exist_ok=True)
             save_path = os.path.join(save_dir, str(self.opt.imgnum)+'.'+self.opt.savefmt)
             cv2.imwrite(save_path, result[:, :, ::-1])
-            if self.opt.saveprint: print(f'{self.n+1} image saved -> {save_path}')
+            if self.opt.saveprint: print(f'{self.n} image saved -> {save_path}')
         # ==============================================================================================================
         # =========================================== print result image ===============================================
         if self.opt.image_show > self.n or self.opt.image_show == -1:
             result = Image.fromarray(result)
             result.show()
         # ==============================================================================================================
-        if self.opt.unit_time: print(f'{self.n + 1} image time spending: {time.perf_counter() - unit_start:4f}s.')
+        if self.opt.unit_time: print(f'{self.n} image time spending: {time.perf_counter() - unit_start:4f}s.')
         self.n += 1
 
     @staticmethod
@@ -129,13 +131,13 @@ class ThreadSVComp:
         dst_h, dst_w, _ = img2.shape
         sift = SIFTMatcher()
 
-        if self.opt.verbose: print(f'{self.n + 1} image SIFT...')
+        if self.opt.verbose: print(f'{self.n} image SIFT...')
         # SIFT & KNN BFMatching
         src_match, dst_match = sift.thread(img1, img2)
         if self.opt.verbose: print(f"raw matching points: {len(src_match)}")
 
         # RANSAC
-        if self.opt.verbose: print(f'{self.n + 1} image RANSAC...')
+        if self.opt.verbose: print(f'{self.n} image RANSAC...')
         ransac = RANSAC(self.opt)
         final_src, final_dst = ransac.thread(src_match, dst_match, self.opt.ransac_max)
         if self.opt.verbose: print(f'final matching points: {len(final_src)}')
@@ -154,7 +156,7 @@ class ThreadSVComp:
             return result
 
         # Global Homography
-        if self.opt.verbose: print(f'{self.n + 1} image Global Homography Estimation...')
+        if self.opt.verbose: print(f'{self.n} image Global Homography Estimation...')
         h_agent = Homography()
         gh = h_agent.global_homography(final_src, final_dst)
         final_w, final_h, offset_x, offset_y = final_size(img1, img2, gh)
@@ -177,10 +179,10 @@ class ThreadSVComp:
             # As-Projective-As-Possible Stitcher instance definition
             stitcher = Apap(self.opt, [final_w, final_h], [offset_x, offset_y])
             # local homography estimating
-            if self.opt.verbose: print(f'{self.n+1} image local homography Estimation...')
+            if self.opt.verbose: print(f'{self.n} image local homography Estimation...')
             local_homography, local_weight = stitcher.local_homography(final_src, final_dst, vertices)
             # local warping
-            if self.opt.verbose: print(f'{self.n+1} image local warping...')
+            if self.opt.verbose: print(f'{self.n} image local warping...')
             warped_img = stitcher.local_warp(img1, local_homography, mesh, self.opt.warping_progress)
 
             # another image pixel move
@@ -188,7 +190,7 @@ class ThreadSVComp:
             dst_img[offset_y: dst_h + offset_y, offset_x: dst_w + offset_x, :] = img2
 
             # Uniform(50:50) blending
-            if self.opt.verbose: print(f'{self.n+1} image blending...')
+            if self.opt.verbose: print(f'{self.n} image blending...')
             result = uniform_blend(warped_img, dst_img)
 
             #! 只在拼接成功时计算 psnr ssim 指标
@@ -215,6 +217,7 @@ class ThreadSVComp:
                 logger.info(f'psnr: {psnr_one}, ssim: {ssim_one}')
                 self.psnr_list.append(psnr_one)
                 self.ssim_list.append(ssim_one)
+                self.csv_writer.writerow([self.n, psnr_one, ssim_one])
 
                 # 保存调试图像
                 # cv2.imwrite('warped_img.jpg', warped_img)
@@ -248,20 +251,38 @@ class ThreadSVComp:
 
         return target_stack
     
-    def thread_choice(self):
+    def forward(self):
         # mask setting
         mask = self.call_mask()
         # divider instance
         divider = RecursiveDivider()
-        
+        # 加载数据
         datalist = self.call_dataset_sv_comp(self.opt.imgroot, self.opt.imgnum)
-        for idx, data in enumerate(datalist):
-            # if idx > 1:
-            #     break
-            logger.info(f'====================== {idx} / {len(datalist)} ======================')
-            save_dir = os.path.join(os.path.dirname(data[0]), 'apap')
-            data = divider.list_divide(data)
-            self.process(data, mask, save_dir)
+
+        # 从 csv 文件中恢复测试数据
+        if os.path.exists(self.csv_path):
+            with open(self.csv_path, 'r') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    self.n = int(row[0])
+                    self.psnr_list.append(float(row[1]))
+                    self.ssim_list.append(float(row[2]))
+            if self.n > 0:  # 如果已经处理过数据，则从下一行开始处理
+                self.n += 1
+        
+        with open(self.csv_path, 'a', newline='') as f:
+            self.csv_writer = csv.writer(f)  # 追加写入
+            # 进行拼接
+            for idx in range(len(datalist)):
+                if idx < self.n:  # 跳过已经处理过的数据
+                    continue
+                logger.info(f'====================== {idx} / {len(datalist)} ======================')
+                data = datalist[idx]
+                save_dir = os.path.join(os.path.dirname(data[0]), 'apap')
+                data = divider.list_divide(data)
+                self.process(data, mask, save_dir)
+            # 关闭CSV文件
+            f.close()
             
         # 计算指标
         logger.info('<==================== Analysis ===================>')
@@ -287,5 +308,4 @@ class ThreadSVComp:
         print("[ssim] top 30%: ", np.mean(ssim_list_30))
         print("[ssim] top 30~60%: ", np.mean(ssim_list_60))
         print("[ssim] top 60~100%: ", np.mean(ssim_list_100))
-        logger.info('[ssim] average: {}'.format(np.mean(self.ssim_list)))
-        
+        logger.info('[ssim] average: {}'.format(np.mean(self.ssim_list)))        

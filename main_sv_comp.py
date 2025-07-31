@@ -4,4 +4,4 @@ from sv_comp.thread_sv_comp import ThreadSVComp
 if __name__ == '__main__':
     opt = OptionsSVComp().parse()
     thread = ThreadSVComp(opt)
-    thread.thread_choice()
+    thread.forward()

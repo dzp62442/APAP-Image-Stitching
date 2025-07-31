@@ -62,32 +62,16 @@ class ThreadSVComp:
                 # just return
                 return src
 
-    def process(self, imgdir, mask, save_dir):
+    def process(self, imgdir, save_dir, k):
         unit_start = time.perf_counter()
         if self.opt.print_n: print(f'processing {self.n} thread...')
         # ========================================== call image & stitch ==============================================
         result = self.recursive(imgdir)
         # ==============================================================================================================
-        # ====================================== mask carving on result image ==========================================
-        if isinstance(mask, str):
-            mask_img = cv2.imread(mask, cv2.IMREAD_COLOR)[:, :, ::-1]
-            mask_img = cv2.normalize(mask_img, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
-            h, w, _ = mask_img.shape
-            result = cv2.resize(result, dsize=(w, h))
-            result *= mask_img
-        elif isinstance(mask, list):
-            mask_img = cv2.imread(mask[self.n], cv2.IMREAD_COLOR)[:, :, ::-1]
-            mask_img = cv2.normalize(mask_img, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
-            h, w, _ = mask_img.shape
-            result = cv2.resize(result, dsize=(w, h))
-            result *= mask_img
-        else:
-            pass
-        # ==============================================================================================================
         # =========================================== save result image ================================================
         if self.opt.save:
             os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, str(self.opt.imgnum)+'.'+self.opt.savefmt)
+            save_path = os.path.join(save_dir, f'{self.opt.imgnum}_{k+2}.{self.opt.savefmt}')
             cv2.imwrite(save_path, result[:, :, ::-1])
             if self.opt.saveprint: print(f'{self.n} image saved -> {save_path}')
         # ==============================================================================================================
@@ -97,6 +81,8 @@ class ThreadSVComp:
             result.show()
         # ==============================================================================================================
         if self.opt.unit_time: print(f'{self.n} image time spending: {time.perf_counter() - unit_start:4f}s.')
+
+        return result, save_path
 
     @staticmethod
     def call_dataset(fname, root=None):
@@ -112,15 +98,6 @@ class ThreadSVComp:
                 # absolute path
                 target_stack.append(imgname)
         return target_stack
-
-    def call_mask(self):
-        if self.opt.mask_dir is None:
-            return None
-        try:  # only one mask
-            mask = self.opt.mask_dir
-        except:  # mask text file
-            mask = self.call_dataset(self.opt.mask_dir, root=self.opt.mask_root)
-        return mask
 
     def thread(self, src, dst):
         mesh_size = self.opt.mesh_size
@@ -259,10 +236,6 @@ class ThreadSVComp:
         # cv2.imwrite('overlap_mask.jpg', overlap_mask.astype(np.uint8)*255)
     
     def forward(self):
-        # mask setting
-        mask = self.call_mask()
-        # divider instance
-        divider = RecursiveDivider()
         # 加载数据
         datalist = self.call_dataset_sv_comp(self.opt.imgroot, self.opt.imgnum)
 
@@ -275,6 +248,7 @@ class ThreadSVComp:
                     self.psnr_list.append(float(row[1]))
                     self.ssim_list.append(float(row[2]))
         
+        #! 不使用原仓库的递归拼接，直接两两硬拼
         with open(self.csv_path, 'a', newline='') as f:
             self.csv_writer = csv.writer(f)  # 追加写入
             # 进行拼接
@@ -283,10 +257,14 @@ class ThreadSVComp:
                     continue
                 logger.info(f'====================== {idx} / {len(datalist)} ======================')
                 self.n = idx
-                data = datalist[idx]
-                save_dir = os.path.join(os.path.dirname(data[0]), 'apap')
-                data = divider.list_divide(data)
-                self.process(data, mask, save_dir)
+                save_dir = os.path.join(os.path.dirname(datalist[idx][0]), 'apap')
+                for k in range(self.opt.imgnum - 1):  # 两两拼接
+                    if k == 0:
+                        data = tuple((datalist[idx][k], datalist[idx][k + 1]))
+                    else:
+                        data = tuple((middle_result_path, datalist[idx][k + 1]))
+                    print(data)
+                    middel_result, middle_result_path = self.process(data, save_dir, k)
             # 关闭CSV文件
             f.close()
             

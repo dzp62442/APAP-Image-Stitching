@@ -1,3 +1,12 @@
+环境配置
+```bash
+conda create -n apap python=3.8.5
+conda activate apap
+pip install -r requirements.txt
+```
+
+---
+
 # As-Projective-As-Possible Image Stitching with Moving DLT
 
 ---

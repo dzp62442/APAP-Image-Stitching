@@ -133,7 +133,7 @@ class ThreadSVComp:
             # result[:, int(final_w/2):, :] = img2[:, int(final_w/2):, :]
             # 计算拼接指标
             if self.opt.metric:
-                self.metric(warped_img, dst_img, result)
+                self.metric(warped_img, dst_img, result, failure=True)
             return result
 
         # Global Homography
@@ -150,8 +150,11 @@ class ThreadSVComp:
             warped_img = cv2.resize(img1, dsize=(final_w, final_h))
             dst_img = cv2.resize(img2, dsize=(final_w, final_h))
             result = uniform_blend(warped_img, dst_img)  # 直接叠加，相当于单位阵拼接
-            # result[:, :int(final_w/2), :] = img1[:, :int(final_w/2), :]
-            # result[:, int(final_w/2):, :] = img2[:, int(final_w/2):, :]
+            
+            # 计算拼接指标
+            if self.opt.metric:
+                self.metric(warped_img, dst_img, result, failure=True)
+
         else:
             # APAP
             # ready meshgrid
@@ -180,9 +183,9 @@ class ThreadSVComp:
                 match_fig = draw_match(img1, img2, final_src, final_dst, self.opt.matching_line)
                 Image.fromarray(match_fig).show()
 
-        # 计算拼接指标
-        if self.opt.metric:
-            self.metric(warped_img, dst_img, result)
+            # 计算拼接指标
+            if self.opt.metric:
+                self.metric(warped_img, dst_img, result)
 
         return result
 
@@ -202,38 +205,51 @@ class ThreadSVComp:
 
         return target_stack
 
-    def metric(self, warped_img, dst_img, result):
-        # 生成掩码
-        warped_mask = np.zeros((warped_img.shape[0], warped_img.shape[1]), dtype=np.uint8)
-        warped_mask[np.any(warped_img > 0, axis=2)] = 255
-        dst_mask = np.zeros((dst_img.shape[0], dst_img.shape[1]), dtype=np.uint8)
-        dst_mask[np.any(dst_img > 0, axis=2)] = 255
+    def metric(self, warped_img, dst_img, result, failure=False):
+        if not failure:  # 拼接成功，正常计算重叠区域掩码
+            # 生成掩码
+            warped_mask = np.zeros((warped_img.shape[0], warped_img.shape[1]), dtype=np.uint8)
+            warped_mask[np.any(warped_img > 0, axis=2)] = 255
+            dst_mask = np.zeros((dst_img.shape[0], dst_img.shape[1]), dtype=np.uint8)
+            dst_mask[np.any(dst_img > 0, axis=2)] = 255
 
-        # 掩码中白色区域可能存在细小黑点，通过形态学操作去除
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # 形态学操作去除细小黑点
-        warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_CLOSE, kernel)  # 闭操作：先膨胀后腐蚀，填充小的黑点（在白色区域中）
-        dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_CLOSE, kernel)
-        warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_OPEN, kernel)  # 开操作：先腐蚀后膨胀，去除小的白点（在黑色背景上）
-        dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_OPEN, kernel)
+            # 掩码中白色区域可能存在细小黑点，通过形态学操作去除
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # 形态学操作去除细小黑点
+            warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_CLOSE, kernel)  # 闭操作：先膨胀后腐蚀，填充小的黑点（在白色区域中）
+            dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_CLOSE, kernel)
+            warped_mask = cv2.morphologyEx(warped_mask, cv2.MORPH_OPEN, kernel)  # 开操作：先腐蚀后膨胀，去除小的白点（在黑色背景上）
+            dst_mask = cv2.morphologyEx(dst_mask, cv2.MORPH_OPEN, kernel)
 
-        # 计算重叠区域指标
-        warped_mask_f = cv2.cvtColor(warped_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
-        dst_mask_f = cv2.cvtColor(dst_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
-        overlap_mask = warped_mask_f * dst_mask_f
-        psnr_one = skimage.measure.compare_psnr(warped_img*overlap_mask, dst_img*overlap_mask, 255)
-        ssim_one = skimage.measure.compare_ssim(warped_img*overlap_mask, dst_img*overlap_mask, data_range=255, multichannel=True)
-        logger.info(f'psnr: {psnr_one}, ssim: {ssim_one}')
-        self.psnr_list.append(psnr_one)
-        self.ssim_list.append(ssim_one)
-        self.csv_writer.writerow([self.n, psnr_one, ssim_one])
+            # 计算重叠区域指标
+            warped_mask_f = cv2.cvtColor(warped_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
+            dst_mask_f = cv2.cvtColor(dst_mask.astype(np.float32)/255, cv2.COLOR_GRAY2BGR)
+            overlap_mask = warped_mask_f * dst_mask_f
+            warped_img_f = warped_img.astype(np.float32)
+            dst_img_f = dst_img.astype(np.float32)
+            psnr_one = skimage.measure.compare_psnr(warped_img_f*overlap_mask, dst_img_f*overlap_mask, 255)
+            ssim_one = skimage.measure.compare_ssim(warped_img_f*overlap_mask, dst_img_f*overlap_mask, data_range=255, multichannel=True)
+            logger.info(f'psnr: {psnr_one}, ssim: {ssim_one}')
+            self.psnr_list.append(psnr_one)
+            self.ssim_list.append(ssim_one)
+            self.csv_writer.writerow([self.n, psnr_one, ssim_one])
 
-        # 保存调试图像
-        # cv2.imwrite('warped_img.jpg', warped_img)
-        # cv2.imwrite('dst_img.jpg', dst_img)
-        # cv2.imwrite('result.jpg', result)
-        # cv2.imwrite('warped_mask.jpg', warped_mask)
-        # cv2.imwrite('dst_mask.jpg', dst_mask)
-        # cv2.imwrite('overlap_mask.jpg', overlap_mask.astype(np.uint8)*255)
+            # 保存调试图像
+            # cv2.imwrite('warped_img.jpg', warped_img)
+            # cv2.imwrite('dst_img.jpg', dst_img)
+            # cv2.imwrite('result.jpg', result)
+            # cv2.imwrite('warped_mask.jpg', warped_mask)
+            # cv2.imwrite('dst_mask.jpg', dst_mask)
+            # cv2.imwrite('overlap_mask.jpg', overlap_mask.astype(np.uint8)*255)
+        
+        else:  # 拼接失败，直接计算指标
+            warped_img_f = warped_img.astype(np.float32)
+            dst_img_f = dst_img.astype(np.float32)
+            psnr_one = skimage.measure.compare_psnr(warped_img_f, dst_img_f, 255)
+            ssim_one = skimage.measure.compare_ssim(warped_img_f, dst_img_f, data_range=255, multichannel=True)
+            logger.info(f'psnr: {psnr_one}, ssim: {ssim_one}')
+            self.psnr_list.append(psnr_one)
+            self.ssim_list.append(ssim_one)
+            self.csv_writer.writerow([self.n, psnr_one, ssim_one])
     
     def forward(self):
         # 加载数据
